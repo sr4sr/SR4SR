@@ -37,7 +37,7 @@ export function render(main, state) {
       how: 'Robux per utente attivo: la qualità della monetizzazione, non la quantità.' },
   ]));
   main.appendChild(el('p', 'model-note',
-    `Modello: 1 R$ = ${fmtDec(a.devexUsdPerRobux ?? 0, 4)} $ al tasso DevEx, meno il ${fmtPct(a.royaltyShare ?? 0, 0)} di royalty. `
+    `Modello: 1 R$ = ${fmtDec(a.devexUsdPerRobux ?? 0, 4)} $ al tasso DevEx, meno il ${fmtPct(a.royaltyShare ?? 0, 0)} che va a terzi (royalty e altre quote). `
     + `La valutazione applica al netto mensile un multiplo ${fmtMultiple(mult.conservative)} (conservativa) o ${fmtMultiple(mult.base)} (base).`));
 
   const g = grid();

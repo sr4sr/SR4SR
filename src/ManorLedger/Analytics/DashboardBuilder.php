@@ -143,8 +143,8 @@ final class DashboardBuilder
             'royaltyShare'     => $eco['royaltyShare'],
             'multiples'        => $eco['multiples'],
             'plateauShares'    => $eco['plateauShares'],
-            'notes'            => 'Tasso DevEx Roblox Developer Exchange (set 2026); royalty del '
-                . round($eco['royaltyShare'] * 100) . '% trattenuta prima del netto. '
+            'notes'            => 'Tasso DevEx Roblox Developer Exchange (set 2026); quote di terzi (royalty e altre) del '
+                . round($eco['royaltyShare'] * 100) . '% trattenute prima del netto. '
                 . 'Media a 7 giorni consecutivi su giorni consolidati: l\'ultimo giorno di ricavi è provvisorio '
                 . 'e resta fuori dalla finestra. Multiplo base ' . $eco['multiples']['base'] . 'x sul mensile netto se il livello tiene, '
                 . $eco['multiples']['conservative'] . 'x sugli scenari di plateau.',

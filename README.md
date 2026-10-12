@@ -126,7 +126,7 @@ configurable assumptions (`config/app.php`, `economics`), all shown in the UI:
 | Assumption | Default | Why |
 |---|---|---|
 | DevEx rate | 0.0038 USD per Robux | Roblox Developer Exchange rate. |
-| Royalty share | 17 % | Revenue share withheld before the developer's net. |
+| Royalty share | 17 % | Revenue withheld before the developer's net (licence royalty and any other share). An installation sets its own per game in `<data>/revenue-shares.json`, outside the repository. |
 | Valuation multiple, base | 30 × monthly net | "The current level holds" scenario: the theoretical ceiling. |
 | Valuation multiple, conservative | 18 × monthly net | The discounted reading for a game past its growth phase. |
 | Plateau shares | 6 %, 10 %, 15 % of peak DAU | Scenarios for an audience that has settled. |

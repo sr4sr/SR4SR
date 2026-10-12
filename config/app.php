@@ -21,11 +21,19 @@ $stateDir = rtrim((string)$env('MANOR_STATE_DIR', $dataDir), '/');
 // game added later lives under <data>/games/<slug>/. Per-game paths are listed
 // in full: a game never inherits another game's file (Support\Games).
 $gameDir = static fn (string $slug): string => $dataDir . '/games/' . $slug;
+// How much of each game's revenue goes to others before the developer's net
+// (licence royalty, partners) is the owner's business, not the repository's:
+// <data>/revenue-shares.json, {"<slug>": 0.25, ...}, overrides the defaults
+// below. It lives in the data directory so that every build reads it, the
+// timer's and a manual one alike. A value outside [0, 1) is ignored.
+$shares = json_decode((string)@file_get_contents($dataDir . '/revenue-shares.json'), true);
+$share = static fn (string $slug, float $default): float =>
+    is_numeric($shares[$slug] ?? null) && $shares[$slug] >= 0 && $shares[$slug] < 1 ? (float)$shares[$slug] : $default;
 $games = [
     'locust' => [
         'name'         => 'The Locust\'s Manor',
         'universeId'   => (int)$env('MANOR_UNIVERSE_ID', 10674300622),
-        'royaltyShare' => 0.17,    // revenue share withheld before the developer's net
+        'royaltyShare' => $share('locust', 0.17),    // withheld before the developer's net (see above)
         'voices'       => true,    // AI Sentiment view (YouTube)
         'ads'          => true,    // Ads view (campaign spend from bin/ads-import)
         'paths' => [
@@ -45,7 +53,7 @@ $games = [
     'colorblind' => [
         'name'         => 'THE SEWER',
         'universeId'   => (int)$env('MANOR_UNIVERSE_ID_COLORBLIND', 10766214469),
-        'royaltyShare' => 0.0,     // not a licensed game: no royalty withheld
+        'royaltyShare' => $share('colorblind', 0.0),  // not a licensed game: no royalty withheld
         'voices'       => false,
         'ads'          => false,
         'paths' => [

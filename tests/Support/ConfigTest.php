@@ -36,6 +36,28 @@ final class ConfigTest extends TestCase
         }
     }
 
+    public function testRevenueSharesComeFromTheDataDirectory(): void
+    {
+        $dir = sys_get_temp_dir() . '/manor-shares-' . bin2hex(random_bytes(4));
+        mkdir($dir, 0700);
+        putenv('MANOR_DATA_DIR=' . $dir);
+        try {
+            $defaults = Config::load(__DIR__ . '/../../config/app.php');
+            self::assertSame(0.17, $defaults->get('games.locust.royaltyShare'), 'no file: the default');
+            self::assertSame(0.0, $defaults->get('games.colorblind.royaltyShare'));
+
+            file_put_contents($dir . '/revenue-shares.json', json_encode(['locust' => 0.25, 'colorblind' => 1.5]));
+            $config = Config::load(__DIR__ . '/../../config/app.php');
+            self::assertSame(0.25, $config->get('games.locust.royaltyShare'));
+            self::assertSame(0.25, $config->get('economics.royaltyShare'), 'the default game drives the legacy key');
+            self::assertSame(0.0, $config->get('games.colorblind.royaltyShare'), 'outside [0, 1): ignored');
+        } finally {
+            putenv('MANOR_DATA_DIR');
+            @unlink($dir . '/revenue-shares.json');
+            rmdir($dir);
+        }
+    }
+
     public function testCaptionRequestsAreAtLeastTwoMinutesApart(): void
     {
         $config = Config::load(__DIR__ . '/../../config/app.php');
