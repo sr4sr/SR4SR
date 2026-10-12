@@ -189,6 +189,12 @@ final class DashboardBuilder
         return Series::aggregateLabels($labelled, false, $weights);
     }
 
+    /** A funnel metric, fetched once per FunnelName (Roblox\MetricCatalog::SPLIT_DIMENSIONS). */
+    private function isSplitPerFunnel(string $id): bool
+    {
+        return in_array('FunnelName', $this->catalogById[$id]['dimensions'] ?? [], true);
+    }
+
     private function isAdditive(string $unit): bool
     {
         return in_array($unit, Series::ADDITIVE_UNITS, true);
@@ -209,7 +215,15 @@ final class DashboardBuilder
             $metric = $history->metric($id);
             $labelMaps = $metric['series'];
             $flags = [];
-            if (!isset($labelMaps[''])) {
+            if ($this->isSplitPerFunnel($id)) {
+                // Until 8 Oct 2026 Roblox summed every funnel into one series;
+                // funnels measure different things, so neither that series nor
+                // a fold of the per-funnel ones is a meaningful total.
+                unset($labelMaps['']);
+                if ($labelMaps === []) {
+                    continue;
+                }
+            } elseif (!isset($labelMaps[''])) {
                 $aggregate = $this->foldLabels($history, $id, $metric);
                 if ($aggregate !== null) {
                     $labelMaps = ['' => $aggregate] + $labelMaps;

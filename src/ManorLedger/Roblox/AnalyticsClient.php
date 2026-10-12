@@ -9,6 +9,9 @@
  *   - breakdown rejected  -> the metric is fetched again as a plain aggregate
  *   - network failure     -> retried with linear backoff up to maxTries
  *
+ * It also lists the values of a dimension (dimensionValues), which the
+ * Refresher needs for the metrics the API serves only one filter value at a time.
+ *
  * The HTTP layer is a callable so tests run without network (see CurlTransport
  * for the request/response array shapes).
  */
@@ -131,6 +134,29 @@ final class AnalyticsClient
         return $out;
     }
 
+    /**
+     * The values a filter-only dimension takes for a metric over the metric's
+     * own window (POST v1/universes/{id}/dimension-values), with the same
+     * polling, retry and rate-limit handling as a metric. Returns a cache row:
+     * status 'ok' with `values`, 'empty', or a failure with `message`.
+     *
+     * @param array<string, mixed> $metric
+     * @return array<string, mixed>
+     */
+    public function dimensionValues(array $metric, string $dimension): array
+    {
+        $listing = [
+            'id'          => (string)$metric['id'],
+            'key'         => $metric['id'] . '@' . $dimension,
+            'granularity' => $metric['granularity'] ?? 'OneDay',
+            'days'        => $metric['days'] ?? 30,
+            'breakdown'   => null,
+            'endpoint'    => 'dimension-values',
+            'dimension'   => $dimension,
+        ];
+        return $this->fetch([$listing])[$listing['key']];
+    }
+
     /** Time window aligned to the UTC day (or hour for hourly metrics). */
     private function window(array $metric, ?int $days = null): array
     {
@@ -157,17 +183,31 @@ final class AnalyticsClient
                 'body'    => null,
             ];
         }
-        $breakdown = $job['noBreakdown'] ? null : ($job['met']['breakdown'] ?? null);
-        $payload = array_filter([
-            'metric'      => $job['met']['id'],
-            'granularity' => $job['met']['granularity'],
-            'startTime'   => $job['start'],
-            'endTime'     => $job['end'],
-            'breakdown'   => $breakdown,
-        ], static fn ($v) => $v !== null);
+        if (self::isListing($job)) {
+            $endpoint = 'dimension-values';
+            $payload = [
+                'metric'     => $job['met']['id'],
+                // Plural: the singular "dimension" returns an empty list without an error.
+                'dimensions' => [(string)$job['met']['dimension']],
+                'startTime'  => $job['start'],
+                'endTime'    => $job['end'],
+            ];
+        } else {
+            $endpoint = 'metrics';
+            $breakdown = $job['noBreakdown'] ? null : ($job['met']['breakdown'] ?? null);
+            $payload = array_filter([
+                'metric'      => $job['met']['id'],
+                'granularity' => $job['met']['granularity'],
+                'startTime'   => $job['start'],
+                'endTime'     => $job['end'],
+                'breakdown'   => $breakdown,
+                // Set by the Refresher on the parts of a split metric.
+                'filter'      => $job['met']['filter'] ?? null,
+            ], static fn ($v) => $v !== null);
+        }
         return $common + [
             'method'  => 'POST',
-            'url'     => $this->baseUrl . 'v1/universes/' . $this->universeId . '/metrics',
+            'url'     => $this->baseUrl . 'v1/universes/' . $this->universeId . '/' . $endpoint,
             'headers' => ['x-api-key' => $this->apiKey, 'Content-Type' => 'application/json'],
             'body'    => json_encode($payload),
         ];
@@ -240,6 +280,15 @@ final class AnalyticsClient
         }
         if ($http !== 200 && $http !== 202) {
             $this->finish($job, 'error', 'HTTP ' . $http);
+            return;
+        }
+        if (self::isListing($job)) {
+            $values = self::extractValues($json, (string)$job['met']['dimension']);
+            if ($values !== []) {
+                $this->finish($job, 'ok', '', ['values' => $values]);
+            } else {
+                $this->finish($job, 'empty', 'No value of this dimension in the period');
+            }
             return;
         }
         $series = self::extractSeries($json);
@@ -321,6 +370,34 @@ final class AnalyticsClient
         usort($series, static fn (array $a, array $b): int =>
             [abs($b['total']), count($b['points'])] <=> [abs($a['total']), count($a['points'])]);
         return $series;
+    }
+
+    private static function isListing(array $job): bool
+    {
+        return ($job['met']['endpoint'] ?? null) === 'dimension-values';
+    }
+
+    /**
+     * Values of one dimension from a completed dimension-values response, in
+     * the order Roblox lists them (not meaningful: it is not the step order).
+     *
+     * @return list<string>
+     */
+    private static function extractValues(array $json, string $dimension): array
+    {
+        $values = [];
+        foreach ($json['response']['values'] ?? [] as $entry) {
+            if (!is_array($entry) || ($entry['dimension'] ?? null) !== $dimension) {
+                continue;
+            }
+            foreach ($entry['values'] ?? [] as $v) {
+                $value = is_array($v) ? (string)($v['value'] ?? '') : (string)$v;
+                if ($value !== '' && !in_array($value, $values, true)) {
+                    $values[] = $value;
+                }
+            }
+        }
+        return $values;
     }
 
     /** Error message in either of the two shapes Roblox uses. */

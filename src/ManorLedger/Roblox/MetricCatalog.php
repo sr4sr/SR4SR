@@ -33,7 +33,6 @@ final class MetricCatalog
         'CustomEventName',
         'DataStoreOperation',
         'DataStoreStatus',
-        'FunnelName',
         'FunnelStep',
         'MemoryStoreOperation',
         'MemoryStoreStatus',
@@ -44,6 +43,15 @@ final class MetricCatalog
         'ThumbnailAsset',
         'TransactionType',
     ];
+
+    /**
+     * Dimensions the API accepts only as a filter, never as a breakdown, and
+     * that it requires on every metric declaring them: since 8 Oct 2026 a
+     * funnel metric without a FunnelName filter is rejected outright
+     * ("Dimension FunnelName is required as a filter"). Such a metric is
+     * fetched once per value, its series labelled with the value (Refresher).
+     */
+    public const SPLIT_DIMENSIONS = ['FunnelName'];
 
     /** @var array<string, array<string, mixed>> metric id => definition */
     private array $byId = [];
@@ -68,6 +76,7 @@ final class MetricCatalog
                 continue;
             }
             $metric['breakdown'] = $this->effectiveBreakdown($metric);
+            $metric['splitBy']   = self::splitDimension($metric);
             $this->byId[(string)$metric['id']] = $metric;
         }
         foreach ($dimensionsJson['pairs'] ?? [] as $pair) {
@@ -120,6 +129,21 @@ final class MetricCatalog
     public function dimensionPairs(): array
     {
         return $this->pairs;
+    }
+
+    /**
+     * The filter-only dimension a catalog entry has to be split on, or null.
+     *
+     * @param array<string, mixed> $metric
+     */
+    private static function splitDimension(array $metric): ?string
+    {
+        foreach (self::SPLIT_DIMENSIONS as $dimension) {
+            if (in_array($dimension, $metric['dimensions'] ?? [], true)) {
+                return $dimension;
+            }
+        }
+        return null;
     }
 
     /** Unit (catalog `format`) of a metric id or of a "Metric|Dimension" key. */

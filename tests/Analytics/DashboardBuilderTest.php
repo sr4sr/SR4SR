@@ -100,6 +100,28 @@ final class DashboardBuilderTest extends TestCase
         self::assertArrayNotHasKey('DailyActiveUsers|Country', $m, 'pairs live under dimensions');
     }
 
+    public function testFunnelMetricsShowOneLinePerFunnelAndNoTotal(): void
+    {
+        $history = json_decode((string)file_get_contents($this->path), true);
+        $history['metrics']['FunnelCohortStep1Users'] = ['unit' => 'int', 'series' => [
+            ''        => ['2026-08-20' => 900, '2026-08-21' => 950],   // the cross-funnel sum Roblox served until 8 Oct
+            'Partita' => ['2026-08-20' => 400, '2026-08-21' => 420],
+            'Shop'    => ['2026-08-20' => 30, '2026-08-21' => 35],
+        ]];
+        $history['metrics']['FunnelCohortCompletionRate'] = ['unit' => 'pct', 'series' => ['' => ['2026-08-20' => 0.7]]];
+        file_put_contents($this->path, json_encode($history));
+        foreach (['FunnelCohortStep1Users' => 'int', 'FunnelCohortCompletionRate' => 'pct'] as $id => $format) {
+            $this->catalogById[$id] = ['id' => $id, 'name' => $id, 'category' => 'Funnels', 'format' => $format,
+                'dimensions' => ['FunnelName', 'FunnelStep'], 'breakdown' => ['FunnelName']];
+        }
+
+        $m = $this->build()['metrics'];
+        $step1 = $m['FunnelCohortStep1Users'];
+        self::assertSame(['Partita', 'Shop'], array_column($step1['series'], 'label'), 'neither the old sum nor a new one');
+        self::assertArrayNotHasKey('aggregatedFromBreakdown', $step1);
+        self::assertArrayNotHasKey('FunnelCohortCompletionRate', $m, 'only the retired sum: nothing to show');
+    }
+
     public function testDimensionsSelectPairsAndGroupCountries(): void
     {
         $dims = $this->build()['dimensions'];

@@ -29,9 +29,14 @@ change of this implementation. Breakdowns that *are* the metric (request
 status, memory category, session-time bucket, ad format) are kept, because
 there is no double counting to do: the buckets partition events, not people.
 
+Funnel metrics go the other way, because the API decides it: `FunnelName`
+can only be a filter, and since 8 Oct 2026 it is mandatory. They are fetched
+once per funnel and stored as one series per funnel, with no total.
+
 **Where** — `src/ManorLedger/Roblox/MetricCatalog.php`
-(`INTRINSIC_BREAKDOWNS`, `effectiveBreakdown()`), `config/dimensions.json`,
-`docs/METRICS.md` §"Aggregates vs breakdowns".
+(`INTRINSIC_BREAKDOWNS`, `effectiveBreakdown()`, `SPLIT_DIMENSIONS`),
+`Refresher::fetchRows()`, `config/dimensions.json`,
+`docs/METRICS.md` §"Aggregates vs breakdowns" and §"Funnels".
 
 ---
 

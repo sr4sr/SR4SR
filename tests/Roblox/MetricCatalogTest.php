@@ -49,6 +49,18 @@ final class MetricCatalogTest extends TestCase
         self::assertNull($catalog->byId('TotalPlayTimeHours')['breakdown']);
     }
 
+    public function testFunnelMetricsAreSplitPerFunnelNameNeverBrokenDownByIt(): void
+    {
+        $catalog = self::realCatalog();
+        foreach (['FunnelCohortCompletionRate', 'FunnelCohortSessionCompletionRate', 'FunnelCohortStep1Users'] as $id) {
+            self::assertSame('FunnelName', $catalog->byId($id)['splitBy'], "$id needs a FunnelName filter");
+            self::assertNull($catalog->byId($id)['breakdown'], 'FunnelName is filter-only: never a breakdown');
+        }
+        self::assertSame('FunnelName', $catalog->byId('FunnelUserTotalCount')['splitBy']);
+        self::assertSame(['FunnelStep'], $catalog->byId('FunnelUserTotalCount')['breakdown'], 'the step breakdown stays');
+        self::assertNull($catalog->byId('DailyActiveUsers')['splitBy']);
+    }
+
     public function testPlatformSplitsComeFromDimensionPairs(): void
     {
         $pairs = self::realCatalog()->dimensionPairs();

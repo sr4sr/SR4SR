@@ -27,6 +27,10 @@ final class RefresherTest extends TestCase
     /** @var list<string> */
     private array $log = [];
     private ?string $keySeenByFactory = null;
+    /** @var list<array<string, mixed>> catalog entries added to A, B, W */
+    private array $extraMetrics = [];
+    /** @var ?array<string, mixed> response to every dimension-values request (default: the fixture) */
+    private ?array $listing = null;
 
     protected function setUp(): void
     {
@@ -61,6 +65,7 @@ final class RefresherTest extends TestCase
                 ['id' => 'A', 'breakdown' => ['Platform']] + $base,
                 ['id' => 'B'] + $base,
                 ['id' => 'W', 'granularity' => 'OneWeek'] + $base,
+                ...$this->extraMetrics,
             ]],
             ['pairs' => [['metric' => 'A', 'dimension' => 'Platform', 'name' => 'A per Platform']]],
         );
@@ -72,8 +77,17 @@ final class RefresherTest extends TestCase
             $out = [];
             foreach ($requests as $request) {
                 $this->sent[] = $request;
-                $metric = json_decode((string)$request['body'], true)['metric'] ?? '';
-                $out[] = $this->responsesByMetric[$metric]
+                $body = json_decode((string)$request['body'], true) ?? [];
+                if (str_ends_with((string)$request['url'], '/dimension-values')) {
+                    $out[] = $this->listing
+                        ?? ['status' => 200, 'body' => self::fixture('dimension-values.json'), 'headers' => [], 'error' => ''];
+                    continue;
+                }
+                $metric = $body['metric'] ?? '';
+                // A part of a split metric answers to "Metric#Value" first.
+                $value = $body['filter'][0]['values'][0] ?? null;
+                $out[] = ($value !== null ? ($this->responsesByMetric[$metric . '#' . $value] ?? null) : null)
+                    ?? $this->responsesByMetric[$metric]
                     ?? ['status' => 200, 'body' => self::fixture('completed-aggregate.json'), 'headers' => [], 'error' => ''];
             }
             return $out;
@@ -242,5 +256,95 @@ final class RefresherTest extends TestCase
         self::assertSame('error', $this->readJson('cache/metrics.json')['results']['B']['status']);
         self::assertFileExists($this->dir . '/history.json', 'history is still saved for the rows that succeeded');
         self::assertStringContainsString('Snapshot skipped: 1 row(s) failed', implode("\n", $this->log));
+    }
+
+    private function withFunnelMetrics(): void
+    {
+        $funnel = ['granularity' => 'OneDay', 'days' => 30, 'dimensions' => ['FunnelName', 'FunnelStep', 'Platform'], 'breakdown' => ['FunnelName']];
+        $this->extraMetrics = [
+            ['id' => 'F', 'format' => 'pct'] + $funnel,
+            ['id' => 'G', 'format' => 'int'] + $funnel,
+        ];
+    }
+
+    /** @return list<array<string, mixed>> the decoded bodies of the requests sent to $suffix */
+    private function bodiesSentTo(string $suffix): array
+    {
+        $out = [];
+        foreach ($this->sent as $request) {
+            if (str_ends_with((string)$request['url'], $suffix)) {
+                $out[] = json_decode((string)$request['body'], true);
+            }
+        }
+        return $out;
+    }
+
+    public function testFunnelMetricsAreFetchedOncePerFunnelAndLabelledWithIt(): void
+    {
+        $this->withFunnelMetrics();
+        $summary = $this->refresher()->run();
+
+        self::assertSame(['ok' => 4], $summary['metrics']);
+        self::assertSame(0, $summary['failed']);
+        self::assertSame('2026-09-16', $summary['snapshot']);
+        self::assertCount(1, $this->bodiesSentTo('/dimension-values'), 'one listing serves every funnel metric');
+        self::assertSame(2 + 1 + 2 * 3 + 1, $summary['requests'], 'A, B, the listing, F and G per funnel, the pair');
+
+        $parts = array_values(array_filter($this->bodiesSentTo('/metrics'), static fn (array $b): bool => $b['metric'] === 'F'));
+        self::assertSame(['FUNNEL_TYPE_ONBOARDING', 'Partita', 'Shop'], array_map(static fn (array $b) => $b['filter'][0]['values'][0], $parts));
+        foreach ($parts as $body) {
+            self::assertSame('FunnelName', $body['filter'][0]['dimension']);
+            self::assertSame('IN', $body['filter'][0]['operation']);
+            self::assertArrayNotHasKey('breakdown', $body, 'FunnelName is never sent as a breakdown');
+        }
+
+        $row = $this->readJson('cache/metrics.json')['results']['F'];
+        self::assertSame('ok', $row['status']);
+        self::assertSame('F', $row['key']);
+        self::assertSame('FunnelName', $row['splitBy']);
+        self::assertSame(['FUNNEL_TYPE_ONBOARDING', 'Partita', 'Shop'], array_column($row['series'], 'label'));
+        self::assertArrayNotHasKey('F#Partita', $this->readJson('cache/metrics.json')['results'], 'parts never reach the cache');
+
+        $history = $this->readJson('history.json')['metrics']['G'];
+        self::assertSame(['FUNNEL_TYPE_ONBOARDING', 'Partita', 'Shop'], array_keys($history['series']));
+        self::assertSame(120411.0, $history['series']['Shop']['2026-09-13']);
+    }
+
+    public function testNoFunnelLoggedLeavesTheRowsEmptyAndTheDayArchived(): void
+    {
+        $this->withFunnelMetrics();
+        $this->listing = ['status' => 200, 'body' => json_encode(['done' => true, 'response' => ['values' => []]]), 'headers' => [], 'error' => ''];
+        $summary = $this->refresher()->run();
+
+        self::assertSame(['empty' => 2, 'ok' => 2], $summary['metrics']);
+        self::assertSame('2026-09-16', $summary['snapshot']);
+        self::assertSame(['A', 'B', 'A'], array_column($this->bodiesSentTo('/metrics'), 'metric'), 'A, B and the pair: no funnel part');
+        self::assertStringContainsString('No FunnelName', $this->readJson('cache/metrics.json')['results']['F']['message']);
+    }
+
+    public function testAFailedFunnelFailsItsRowAndSkipsTheSnapshot(): void
+    {
+        $this->withFunnelMetrics();
+        $this->responsesByMetric['F#Shop'] = ['status' => 403, 'body' => self::fixture('generic-error.json'), 'headers' => [], 'error' => ''];
+        $summary = $this->refresher()->run();
+
+        self::assertSame(['error' => 1, 'ok' => 3], $summary['metrics']);
+        self::assertNull($summary['snapshot']);
+        $row = $this->readJson('cache/metrics.json')['results']['F'];
+        self::assertSame('error', $row['status']);
+        self::assertStringStartsWith('Shop: Insufficient permissions', $row['message']);
+        self::assertSame([], $row['series'], 'a half-fetched funnel metric keeps nothing');
+        self::assertArrayNotHasKey('F', $this->readJson('history.json')['metrics']);
+    }
+
+    public function testAFailedListingFailsEveryFunnelMetric(): void
+    {
+        $this->withFunnelMetrics();
+        $this->listing = ['status' => 403, 'body' => self::fixture('generic-error.json'), 'headers' => [], 'error' => ''];
+        $summary = $this->refresher()->run();
+
+        self::assertSame(['error' => 2, 'ok' => 2], $summary['metrics']);
+        self::assertSame(2, $summary['failed']);
+        self::assertStringContainsString('Listing the FunnelName values failed', $this->readJson('cache/metrics.json')['results']['G']['message']);
     }
 }

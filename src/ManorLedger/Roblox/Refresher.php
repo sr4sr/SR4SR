@@ -88,13 +88,13 @@ final class Refresher
         $client = ($this->clientFactory)($this->readApiKey());
 
         $this->info('Fetching metrics (rate limit makes this take a few minutes)...');
-        $metricRows = $metrics === [] ? [] : $client->fetch($metrics);
+        $metricRows = $metrics === [] ? [] : $this->fetchRows($client, $metrics);
         $metricsCache = $this->mergeCache($this->metricsStore, $metricRows);
         $summary['metrics'] = self::countStatuses($metricRows);
         $this->info('Metrics: ' . self::describe($summary['metrics']));
 
         $this->info('Fetching dimension pairs...');
-        $pairRows = $pairs === [] ? [] : $client->fetch(array_values($pairs));
+        $pairRows = $pairs === [] ? [] : $this->fetchRows($client, array_values($pairs));
         $this->mergeCache($this->dimensionsStore, $pairRows);
         $summary['dimensions'] = self::countStatuses($pairRows);
         $this->info('Dimensions: ' . self::describe($summary['dimensions']));
@@ -123,6 +123,133 @@ final class Refresher
         $this->info(sprintf('Done in %.0fs, %d requests, %d failed row(s)',
             $summary['seconds'], $summary['requests'], $summary['failed']));
         return $summary;
+    }
+
+    /**
+     * Fetch a list of metrics, splitting the ones the API serves only one
+     * value of a filter-only dimension at a time (MetricCatalog::SPLIT_DIMENSIONS).
+     * The values are listed once per dimension, every such metric is fetched
+     * once per value with a filter, and the parts come back as a single row
+     * whose series carry the value in their label: "Partita", or "Partita · 2"
+     * over a FunnelStep breakdown.
+     *
+     * @param list<array<string, mixed>> $metrics
+     * @return array<string, array<string, mixed>>
+     */
+    private function fetchRows(AnalyticsClient $client, array $metrics): array
+    {
+        $plain = [];
+        $split = [];
+        foreach ($metrics as $metric) {
+            if (($metric['splitBy'] ?? null) === null) {
+                $plain[] = $metric;
+            } else {
+                $split[] = $metric;
+            }
+        }
+        $rows = $plain === [] ? [] : $client->fetch($plain);
+        if ($split === []) {
+            return $rows;
+        }
+
+        // Every funnel metric has the same funnels: one listing per dimension.
+        $listings = [];
+        foreach ($split as $metric) {
+            $dimension = (string)$metric['splitBy'];
+            $listings[$dimension] ??= $client->dimensionValues($metric, $dimension);
+        }
+        $parts = [];
+        foreach ($split as $metric) {
+            $dimension = (string)$metric['splitBy'];
+            foreach ($listings[$dimension]['values'] ?? [] as $value) {
+                $part = $metric;
+                $part['key']    = self::partKey($metric, $value);
+                $part['filter'] = [['dimension' => $dimension, 'operation' => 'IN', 'values' => [$value]]];
+                $parts[] = $part;
+            }
+        }
+        $partRows = $parts === [] ? [] : $client->fetch($parts);
+        foreach ($split as $metric) {
+            $rows[self::rowKey($metric)] = self::combineParts($metric, $listings[(string)$metric['splitBy']], $partRows);
+        }
+        return $rows;
+    }
+
+    /**
+     * One row out of the parts of a split metric. A failed listing or a
+     * failed part fails the whole row, like any metric that did not come back
+     * complete, so the day is not archived half-fetched.
+     *
+     * @param array<string, mixed>                $metric
+     * @param array<string, mixed>                $listing  row returned by AnalyticsClient::dimensionValues
+     * @param array<string, array<string, mixed>> $partRows
+     * @return array<string, mixed>
+     */
+    private static function combineParts(array $metric, array $listing, array $partRows): array
+    {
+        $dimension = (string)$metric['splitBy'];
+        $row = [
+            'id'          => (string)$metric['id'],
+            'status'      => 'empty',
+            'key'         => self::rowKey($metric),
+            'granularity' => $metric['granularity'] ?? null,
+            'startTime'   => $listing['startTime'] ?? null,
+            'endTime'     => $listing['endTime'] ?? null,
+            'days'        => $listing['days'] ?? null,
+            'series'      => [],
+            'breakdown'   => $metric['breakdown'][0] ?? null,
+            'splitBy'     => $dimension,
+        ];
+        $listingStatus = (string)($listing['status'] ?? 'error');
+        if ($listingStatus !== 'ok') {
+            $row['status']  = $listingStatus;
+            $row['message'] = $listingStatus === 'empty'
+                ? "No $dimension in the period"
+                : "Listing the $dimension values failed: " . ($listing['message'] ?? 'unknown error');
+            return $row;
+        }
+
+        $failures = [];
+        foreach ($listing['values'] ?? [] as $value) {
+            $part = $partRows[self::partKey($metric, $value)] ?? ['status' => 'error', 'message' => 'not fetched'];
+            $status = (string)($part['status'] ?? 'error');
+            if ($status === 'ok') {
+                foreach ($part['series'] ?? [] as $series) {
+                    $label = (string)($series['label'] ?? '');
+                    $series['label'] = $label === '' ? $value : $value . ' · ' . $label;
+                    $row['series'][] = $series;
+                }
+                $row['startTime'] = $part['startTime'] ?? $row['startTime'];
+                $row['endTime']   = $part['endTime'] ?? $row['endTime'];
+                $row['days']      = $part['days'] ?? $row['days'];
+            } elseif ($status !== 'empty') {
+                $failures[] = $value . ': ' . ($part['message'] ?? $status);
+            }
+        }
+        if ($failures !== []) {
+            $row['status']  = 'error';
+            $row['message'] = implode('; ', $failures);
+            $row['series']  = [];
+        } elseif ($row['series'] !== []) {
+            $row['status'] = 'ok';
+            usort($row['series'], static fn (array $a, array $b): int =>
+                [abs($b['total'] ?? 0), count($b['points'] ?? [])] <=> [abs($a['total'] ?? 0), count($a['points'] ?? [])]);
+        } else {
+            $row['message'] = 'No data for this metric in the period';
+        }
+        return $row;
+    }
+
+    /** @param array<string, mixed> $metric */
+    private static function rowKey(array $metric): string
+    {
+        return (string)($metric['key'] ?? $metric['id']);
+    }
+
+    /** @param array<string, mixed> $metric */
+    private static function partKey(array $metric, string $value): string
+    {
+        return self::rowKey($metric) . '#' . $value;
     }
 
     /** @return list<array<string, mixed>> */

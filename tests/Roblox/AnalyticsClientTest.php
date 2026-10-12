@@ -302,4 +302,62 @@ final class AnalyticsClientTest extends TestCase
         self::assertSame('2026-09-15T12:00:00Z', $rows['Concurrent']['endTime']);
         self::assertSame('2026-09-13T12:00:00Z', $rows['Concurrent']['startTime']);
     }
+
+    public function testFilterTravelsInThePayload(): void
+    {
+        $this->script = [self::response(200, self::fixture('completed-aggregate.json'))];
+        $filter = [['dimension' => 'FunnelName', 'operation' => 'IN', 'values' => ['Partita']]];
+        $part = self::metric('FunnelCohortCompletionRate') + ['key' => 'FunnelCohortCompletionRate#Partita', 'filter' => $filter];
+        $rows = $this->client($this->budget(false))->fetch([$part]);
+
+        self::assertSame('ok', $rows['FunnelCohortCompletionRate#Partita']['status']);
+        $body = json_decode($this->sent[0]['body'], true);
+        self::assertSame($filter, $body['filter']);
+        self::assertArrayNotHasKey('breakdown', $body);
+        self::assertSame(self::BASE . 'v1/universes/10674300622/metrics', $this->sent[0]['url']);
+    }
+
+    public function testMissingRequiredFilterIsAnError(): void
+    {
+        $this->script = [self::response(400, self::fixture('filter-required-error.json'))];
+        $rows = $this->client($this->budget(false))->fetch([self::metric('FunnelCohortCompletionRate')]);
+        self::assertSame('error', $rows['FunnelCohortCompletionRate']['status']);
+        self::assertStringContainsString('FunnelName is required as a filter', $rows['FunnelCohortCompletionRate']['message']);
+    }
+
+    public function testDimensionValuesListsEachValueOnce(): void
+    {
+        $this->script = [self::response(200, self::fixture('dimension-values.json'))];
+        $row = $this->client($this->budget(false))->dimensionValues(self::metric('FunnelCohortCompletionRate', null, 30), 'FunnelName');
+
+        self::assertSame('ok', $row['status']);
+        self::assertSame(['FUNNEL_TYPE_ONBOARDING', 'Partita', 'Shop'], $row['values']);
+        self::assertSame('2026-08-16T00:00:00Z', $row['startTime'], 'the metric window');
+        $request = $this->sent[0];
+        self::assertSame(self::BASE . 'v1/universes/10674300622/dimension-values', $request['url']);
+        self::assertSame([
+            'metric' => 'FunnelCohortCompletionRate', 'dimensions' => ['FunnelName'],
+            'startTime' => '2026-08-16T00:00:00Z', 'endTime' => '2026-09-15T00:00:00Z',
+        ], json_decode($request['body'], true));
+    }
+
+    public function testDimensionValuesIsPolledLikeAMetric(): void
+    {
+        $this->script = [
+            self::response(202, json_encode(['done' => false, 'path' => 'v1/universes/10674300622/operations/dimension-values/abc'])),
+            self::response(200, self::fixture('dimension-values.json')),
+        ];
+        $row = $this->client($this->budget(false))->dimensionValues(self::metric('FunnelCohortStep1Users'), 'FunnelName');
+        self::assertSame('ok', $row['status']);
+        self::assertSame('GET', $this->sent[1]['method']);
+        self::assertSame(self::BASE . 'v1/universes/10674300622/operations/dimension-values/abc', $this->sent[1]['url']);
+    }
+
+    public function testDimensionValuesWithNothingLoggedIsEmpty(): void
+    {
+        $this->script = [self::response(200, json_encode(['done' => true, 'response' => ['values' => [['dimension' => 'FunnelName', 'values' => []]]]]))];
+        $row = $this->client($this->budget(false))->dimensionValues(self::metric('FunnelCohortStep1Users'), 'FunnelName');
+        self::assertSame('empty', $row['status']);
+        self::assertArrayNotHasKey('values', $row);
+    }
 }

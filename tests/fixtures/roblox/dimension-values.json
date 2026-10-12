@@ -1,0 +1,9 @@
+{
+  "path": "v1/universes/10674300622/operations/dimension-values/38bffd2b-funnels",
+  "done": true,
+  "response": {
+    "values": [
+      {"dimension": "FunnelName", "values": [{"value": "FUNNEL_TYPE_ONBOARDING"}, {"value": "Partita"}, {"value": "Shop"}, {"value": "Partita"}]}
+    ]
+  }
+}

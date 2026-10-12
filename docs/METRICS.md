@@ -27,6 +27,17 @@ metric (request status, memory by component, thumbnail variants…) keep it.
 Legacy history imported from the old per-platform cache is summed and
 flagged `aggregatedFromBreakdown` until fresh fetches replace those days.
 
+## Funnels: one series per funnel
+
+`FunnelName` is filter-only: the API rejects it as a breakdown, and since
+8 Oct 2026 it rejects a funnel metric without it ("Dimension FunnelName is
+required as a filter"). The refresh lists the funnels once per run
+(`dimension-values`), fetches each funnel metric once per funnel with a
+filter, and stores one series per funnel, labelled with its name ("Partita",
+or "Partita · 2" over a step breakdown). There is no total: funnels measure
+different things, so the cross-funnel sum Roblox served until 7 Oct is not
+shown either. A game that logs no funnel gets an empty row, not an error.
+
 ## Derived series
 
 | Series | Formula |
